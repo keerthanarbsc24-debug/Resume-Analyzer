@@ -4,3 +4,5 @@ sentence-transformers
 scikit-learn
 numpy
 joblib
+pypdf
+python-docx
