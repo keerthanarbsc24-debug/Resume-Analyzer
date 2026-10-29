@@ -3,6 +3,7 @@ torch
 sentence-transformers
 scikit-learn
 numpy
+pandas
 joblib
 pypdf
 python-docx

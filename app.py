@@ -1,233 +1,46 @@
 
+import ast
+import re
+from io import BytesIO
+from pathlib import Path
+
+import joblib
+import pandas as pd
 import streamlit as st
 import torch
 import torch.nn as nn
-import joblib
-import re
-from pathlib import Path
 from sentence_transformers import SentenceTransformer
-
-# Required for reading uploaded PDF and DOCX files
 from pypdf import PdfReader
 from docx import Document
-from io import BytesIO
 
 
-# ==========================================
+# --------------------------------------------------
 # 1. PAGE CONFIGURATION
-# ==========================================
+# --------------------------------------------------
+
 st.set_page_config(
     page_title="AI Resume Analyzer",
     page_icon="📄",
     layout="wide"
 )
 
-st.title("📄 AI-Powered Resume Analyzer")
-st.write(
-    "Upload your resume, select your target career, "
-    "and discover matching skills and skill gaps."
+BASE_DIR = Path(__file__).parent
+
+MODEL_PATH = BASE_DIR / "resume_classifier.pth"
+ENCODER_PATH = BASE_DIR / "label_encoder.pkl"
+SKILLS_PATH = BASE_DIR / "career_skills.csv"
+
+DEVICE = torch.device(
+    "cuda" if torch.cuda.is_available() else "cpu"
 )
 
 
-# ==========================================
-# 2. TARGET JOB SKILL DATABASE
-# ==========================================
-# These are predefined skills for each target role.
-# You can customize them for your project.
+# --------------------------------------------------
+# 2. DEEP LEARNING MODEL
+# --------------------------------------------------
 
-JOB_SKILLS = {
-    "Data Scientist": [
-        "Python",
-        "SQL",
-        "Statistics",
-        "Machine Learning",
-        "Deep Learning",
-        "Pandas",
-        "NumPy",
-        "Data Visualization",
-        "Scikit-learn",
-        "Power BI",
-        "Feature Engineering",
-        "Model Evaluation"
-    ],
-
-    "Data Analyst": [
-        "SQL",
-        "Excel",
-        "Python",
-        "Power BI",
-        "Tableau",
-        "Statistics",
-        "Data Cleaning",
-        "Data Visualization",
-        "Pandas",
-        "Business Intelligence"
-    ],
-
-    "Machine Learning Engineer": [
-        "Python",
-        "Machine Learning",
-        "Deep Learning",
-        "Scikit-learn",
-        "PyTorch",
-        "TensorFlow",
-        "Statistics",
-        "Feature Engineering",
-        "Model Deployment",
-        "APIs",
-        "Git",
-        "Docker"
-    ],
-
-    "Software Developer": [
-        "Python",
-        "Java",
-        "Data Structures",
-        "Algorithms",
-        "SQL",
-        "Git",
-        "GitHub",
-        "Object-Oriented Programming",
-        "REST API",
-        "Testing"
-    ],
-
-    "Business Analyst": [
-        "SQL",
-        "Excel",
-        "Power BI",
-        "Tableau",
-        "Statistics",
-        "Data Visualization",
-        "Business Intelligence",
-        "Requirements Analysis",
-        "Communication"
-    ]
-}
-
-
-# ==========================================
-# 3. SKILL ALIASES
-# ==========================================
-# Different terms can refer to the same skill.
-
-SKILL_ALIASES = {
-    "Python": ["python"],
-    "SQL": ["sql", "structured query language"],
-    "Statistics": ["statistics", "statistical analysis"],
-    "Machine Learning": ["machine learning", "ml"],
-    "Deep Learning": ["deep learning", "dl"],
-    "Pandas": ["pandas"],
-    "NumPy": ["numpy"],
-    "Data Visualization": [
-        "data visualization",
-        "data visualisation"
-    ],
-    "Scikit-learn": [
-        "scikit-learn",
-        "scikit learn",
-        "sklearn"
-    ],
-    "Power BI": ["power bi", "powerbi"],
-    "Feature Engineering": ["feature engineering"],
-    "Model Evaluation": ["model evaluation", "model validation"],
-    "Excel": ["excel", "microsoft excel"],
-    "Tableau": ["tableau"],
-    "Data Cleaning": ["data cleaning", "data preprocessing"],
-    "Business Intelligence": [
-        "business intelligence",
-        "business analytics"
-    ],
-    "PyTorch": ["pytorch", "torch"],
-    "TensorFlow": ["tensorflow"],
-    "Model Deployment": ["model deployment", "deployment"],
-    "APIs": ["api", "apis", "rest api", "rest apis"],
-    "Git": ["git"],
-    "Docker": ["docker"],
-    "Java": ["java"],
-    "Data Structures": [
-        "data structures",
-        "data structure"
-    ],
-    "Algorithms": ["algorithms", "algorithm"],
-    "GitHub": ["github"],
-    "Object-Oriented Programming": [
-        "object-oriented programming",
-        "oops",
-        "oop"
-    ],
-    "REST API": ["rest api", "rest apis"],
-    "Testing": ["software testing", "unit testing", "testing"],
-    "Requirements Analysis": [
-        "requirements analysis",
-        "requirement analysis"
-    ],
-    "Communication": ["communication", "communication skills"]
-}
-
-
-# ==========================================
-# 4. READ RESUME FILES
-# ==========================================
-def extract_resume_text(uploaded_file):
-    file_extension = Path(uploaded_file.name).suffix.lower()
-
-    if file_extension == ".txt":
-        return uploaded_file.getvalue().decode(
-            "utf-8",
-            errors="ignore"
-        )
-
-    elif file_extension == ".pdf":
-        reader = PdfReader(BytesIO(uploaded_file.getvalue()))
-        pages = []
-
-        for page in reader.pages:
-            pages.append(page.extract_text() or "")
-
-        return "\n".join(pages)
-
-    elif file_extension == ".docx":
-        document = Document(BytesIO(uploaded_file.getvalue()))
-
-        paragraphs = [
-            paragraph.text
-            for paragraph in document.paragraphs
-        ]
-
-        return "\n".join(paragraphs)
-
-    else:
-        return ""
-
-
-# ==========================================
-# 5. EXTRACT SKILLS FROM RESUME TEXT
-# ==========================================
-def find_resume_skills(resume_text):
-    text = resume_text.casefold()
-    found_skills = set()
-
-    for skill, aliases in SKILL_ALIASES.items():
-        for alias in aliases:
-            # Match whole phrases/words rather than partial words.
-            pattern = (
-                r"(?<!\w)"
-                + re.escape(alias.casefold())
-                + r"(?!\w)"
-            )
-
-            if re.search(pattern, text):
-                found_skills.add(skill)
-                break
-
-    return found_skills
-
-
-# ==========================================
-# 6. DEEP LEARNING MODEL
-# ==========================================
 class ResumeClassifier(nn.Module):
+
     def __init__(self, input_size, hidden_size, num_classes):
         super().__init__()
 
@@ -242,284 +55,587 @@ class ResumeClassifier(nn.Module):
         return self.network(x)
 
 
+# --------------------------------------------------
+# 3. LOAD CAREER SKILLS FROM CSV
+# --------------------------------------------------
+
+def parse_skills(value):
+    """
+    Convert a skill-list value from the CSV into a
+    Python list. The CSV stores lists as text.
+    """
+
+    if pd.isna(value):
+        return []
+
+    value = str(value).strip()
+
+    try:
+        parsed = ast.literal_eval(value)
+
+        if isinstance(parsed, (list, tuple, set)):
+            return [
+                str(skill).strip()
+                for skill in parsed
+                if str(skill).strip()
+            ]
+
+        if isinstance(parsed, str):
+            return [parsed.strip()] if parsed.strip() else []
+
+    except (ValueError, SyntaxError):
+        pass
+
+    # Fallback for comma-separated skill values.
+    return [
+        skill.strip().strip("'\"")
+        for skill in value.split(",")
+        if skill.strip()
+    ]
+
+
+@st.cache_data
+def load_job_skills():
+
+    if not SKILLS_PATH.exists():
+        raise FileNotFoundError(
+            "career_skills.csv was not found. "
+            "Upload it beside app.py in GitHub."
+        )
+
+    df = pd.read_csv(SKILLS_PATH)
+
+    required_columns = {
+        "category",
+        "job_required_skills"
+    }
+
+    missing_columns = required_columns - set(df.columns)
+
+    if missing_columns:
+        raise ValueError(
+            "Missing CSV columns: "
+            + ", ".join(sorted(missing_columns))
+        )
+
+    df = df.dropna(
+        subset=["category", "job_required_skills"]
+    ).copy()
+
+    df["category"] = (
+        df["category"].astype(str).str.strip()
+    )
+
+    df = df[df["category"] != ""]
+
+    # Each category has one consolidated skill list
+    # in the reduced career_skills.csv file.
+    job_skills = {}
+
+    for _, row in df.iterrows():
+
+        category = row["category"]
+        skills = parse_skills(row["job_required_skills"])
+
+        # Remove duplicate skills without changing order.
+        unique_skills = list(dict.fromkeys(skills))
+
+        if unique_skills:
+            job_skills[category] = unique_skills
+
+    if not job_skills:
+        raise ValueError(
+            "No career categories or skills were found."
+        )
+
+    return job_skills
+
+
+# --------------------------------------------------
+# 4. LOAD THE TRAINED MODEL
+# --------------------------------------------------
+
 @st.cache_resource
-def load_resources():
-    device = torch.device("cpu")
+def load_model_resources():
 
-    label_encoder = joblib.load("label_encoder.pkl")
+    for path in [MODEL_PATH, ENCODER_PATH]:
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Required file not found: {path.name}"
+            )
 
-    sentence_encoder = SentenceTransformer(
+    label_encoder = joblib.load(ENCODER_PATH)
+
+    # This is the same pretrained embedding model
+    # used to create the training embeddings.
+    sentence_model = SentenceTransformer(
         "sentence-transformers/all-MiniLM-L6-v2"
     )
 
+    input_size = 384
+    hidden_size = 128
+    num_classes = len(label_encoder.classes_)
+
     model = ResumeClassifier(
-        input_size=384,
-        hidden_size=128,
-        num_classes=len(label_encoder.classes_)
-    )
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_classes=num_classes
+    ).to(DEVICE)
 
     state_dict = torch.load(
-        "resume_classifier.pth",
-        map_location=device
+        MODEL_PATH,
+        map_location=DEVICE,
+        weights_only=True
     )
 
     model.load_state_dict(state_dict)
     model.eval()
 
-    return model, label_encoder, sentence_encoder
+    return model, label_encoder, sentence_model
 
 
-# ==========================================
-# 7. LOAD MODEL
-# ==========================================
+# --------------------------------------------------
+# 5. EXTRACT TEXT FROM RESUME FILES
+# --------------------------------------------------
+
+def extract_resume_text(uploaded_file):
+
+    filename = uploaded_file.name.lower()
+
+    file_bytes = uploaded_file.getvalue()
+
+    if filename.endswith(".txt"):
+
+        return file_bytes.decode(
+            "utf-8",
+            errors="ignore"
+        )
+
+    elif filename.endswith(".pdf"):
+
+        reader = PdfReader(BytesIO(file_bytes))
+
+        pages = []
+
+        for page in reader.pages:
+            pages.append(page.extract_text() or "")
+
+        return "\n".join(pages)
+
+    elif filename.endswith(".docx"):
+
+        document = Document(BytesIO(file_bytes))
+
+        paragraphs = [
+            paragraph.text
+            for paragraph in document.paragraphs
+        ]
+
+        return "\n".join(paragraphs)
+
+    else:
+        raise ValueError(
+            "Unsupported file type. Upload PDF, DOCX, or TXT."
+        )
+
+
+# --------------------------------------------------
+# 6. FIND SKILLS IN THE RESUME
+# --------------------------------------------------
+
+def normalize_text(text):
+    """
+    Normalize text for skill matching.
+    """
+
+    text = str(text).lower()
+
+    text = re.sub(r"[^a-z0-9+#.]+", " ", text)
+
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def skill_found_in_resume(resume_text, skill):
+
+    normalized_resume = normalize_text(resume_text)
+    normalized_skill = normalize_text(skill)
+
+    if not normalized_skill:
+        return False
+
+    # Escape special characters and match the complete
+    # phrase rather than a partial word.
+    pattern = (
+        r"(?<![a-z0-9])"
+        + re.escape(normalized_skill)
+        + r"(?![a-z0-9])"
+    )
+
+    return re.search(pattern, normalized_resume) is not None
+
+
+def analyze_skill_gap(resume_text, expected_skills):
+
+    matching_skills = []
+    missing_skills = []
+
+    for skill in expected_skills:
+
+        if skill_found_in_resume(resume_text, skill):
+            matching_skills.append(skill)
+        else:
+            missing_skills.append(skill)
+
+    total_skills = len(expected_skills)
+
+    coverage = (
+        len(matching_skills) / total_skills * 100
+        if total_skills > 0
+        else 0
+    )
+
+    return matching_skills, missing_skills, coverage
+
+
+# --------------------------------------------------
+# 7. PREDICT RESUME CATEGORY
+# --------------------------------------------------
+
+def predict_resume_category(
+    resume_text,
+    model,
+    label_encoder,
+    sentence_model
+):
+
+    embedding = sentence_model.encode(
+        [resume_text],
+        convert_to_numpy=True,
+        show_progress_bar=False
+    )
+
+    embedding_tensor = torch.tensor(
+        embedding,
+        dtype=torch.float32,
+        device=DEVICE
+    )
+
+    with torch.no_grad():
+
+        logits = model(embedding_tensor)
+
+        probabilities = torch.softmax(logits, dim=1)
+
+        confidence, predicted_index = torch.max(
+            probabilities, dim=1
+        )
+
+    predicted_index = predicted_index.item()
+
+    predicted_category = label_encoder.inverse_transform(
+        [predicted_index]
+    )[0]
+
+    confidence_score = confidence.item() * 100
+
+    return predicted_category, confidence_score
+
+
+# --------------------------------------------------
+# 8. STREAMLIT USER INTERFACE
+# --------------------------------------------------
+
+st.title("📄 AI-Powered Resume Analyzer")
+
+st.markdown(
+    """
+    Analyze your resume, explore career requirements,
+    identify skills detected in your resume, and find
+    areas to improve for your target career.
+    """
+)
+
+st.info(
+    "The predicted resume category comes from your "
+    "trained deep-learning model. The selected target "
+    "career is used separately for skill-gap analysis."
+)
+
+
+# Load the career skills.
 try:
-    model, label_encoder, sentence_encoder = load_resources()
+    JOB_SKILLS = load_job_skills()
 
 except Exception as error:
-    st.error("The trained model could not be loaded.")
-    st.write("Error details:", str(error))
+    st.error(f"Could not load career skills: {error}")
     st.stop()
 
 
-# ==========================================
-# 8. RESUME INPUT
-# ==========================================
-st.header("1. Upload Your Resume")
+# Resume input.
+st.subheader("1. Upload or enter your resume")
 
 uploaded_file = st.file_uploader(
-    "Upload a resume file",
-    type=["pdf", "docx", "txt"]
+    "Upload a resume",
+    type=["pdf", "docx", "txt"],
+    help="Supported formats: PDF, DOCX, and TXT."
 )
 
-pasted_resume = st.text_area(
+resume_text_input = st.text_area(
     "Or paste your resume text here",
-    height=180,
-    placeholder="Paste your resume text if you do not want to upload a file."
+    height=220,
+    placeholder=(
+        "Paste your resume, including your education, "
+        "skills, projects, and work experience..."
+    )
 )
 
-resume_text = ""
 
-if uploaded_file is not None:
+# Career selector from the dataset.
+st.subheader("2. Select your target career")
+
+career_options = sorted(JOB_SKILLS.keys())
+
+selected_role = st.selectbox(
+    "Which job role are you preparing for?",
+    options=career_options,
+    format_func=lambda role: role.replace("-", " ").title()
+)
+
+
+# Display expected skills automatically.
+expected_skills = JOB_SKILLS[selected_role]
+
+with st.expander(
+    f"View skills expected for {selected_role.replace('-', ' ').title()}",
+    expanded=True
+):
+
+    st.caption(
+        "These skills come from the job-required-skills "
+        "column of your dataset."
+    )
+
+    st.write(", ".join(expected_skills))
+
+
+# Analyze button.
+if st.button("🔍 Analyze Resume", type="primary"):
+
+    resume_text = ""
+
+    # Read uploaded file if one is provided.
+    if uploaded_file is not None:
+
+        try:
+            resume_text = extract_resume_text(uploaded_file)
+
+        except Exception as error:
+            st.error(
+                f"Could not read the uploaded resume: {error}"
+            )
+            st.stop()
+
+    # Pasted text takes priority if provided.
+    if resume_text_input.strip():
+        resume_text = resume_text_input.strip()
+
+    if not resume_text.strip():
+
+        st.warning(
+            "Please upload a resume or paste your resume text."
+        )
+        st.stop()
+
+    if len(resume_text.strip()) < 30:
+
+        st.warning(
+            "The resume text is very short. "
+            "Please provide more resume details."
+        )
+        st.stop()
+
+    # Load the model and analyze.
     try:
-        resume_text = extract_resume_text(uploaded_file)
 
-        if resume_text.strip():
-            st.success("Resume text extracted successfully.")
+        with st.spinner(
+            "Loading the model and analyzing your resume..."
+        ):
 
-            with st.expander("Preview extracted resume text"):
-                st.text(resume_text[:5000])
+            model, label_encoder, sentence_model = (
+                load_model_resources()
+            )
 
-        else:
-            st.warning(
-                "No readable text was found. "
-                "Try a text-based PDF, DOCX, or TXT file, "
-                "or paste the resume text below."
+            predicted_category, confidence_score = (
+                predict_resume_category(
+                    resume_text,
+                    model,
+                    label_encoder,
+                    sentence_model
+                )
+            )
+
+            matching_skills, missing_skills, coverage = (
+                analyze_skill_gap(
+                    resume_text,
+                    expected_skills
+                )
             )
 
     except Exception as error:
-        st.error(f"Could not read the uploaded file: {error}")
 
-# Pasted text is used if no readable uploaded resume is available.
-if not resume_text.strip():
-    resume_text = pasted_resume
-
-
-# ==========================================
-# 9. SELECT TARGET JOB
-# ==========================================
-st.header("2. Select Your Target Career")
-
-target_role = st.selectbox(
-    "Which job role are you preparing for?",
-    list(JOB_SKILLS.keys())
-)
-
-st.write(
-    f"Required skills are based on the project's predefined "
-    f"skill list for **{target_role}**."
-)
-
-with st.expander("View skills expected for this role"):
-    st.write(", ".join(JOB_SKILLS[target_role]))
-
-
-# ==========================================
-# 10. ANALYZE RESUME
-# ==========================================
-st.header("3. Analyze Your Resume")
-
-if st.button("Analyze Resume", type="primary"):
-
-    if not resume_text.strip():
-        st.warning(
-            "Please upload a resume or paste your resume text first."
+        st.error(
+            "Analysis failed. Please check that the model "
+            "files and required libraries are available."
         )
 
-    else:
-        with st.spinner("Analyzing your resume..."):
+        st.exception(error)
+        st.stop()
 
-            # Predict the resume category using the trained model.
-            embedding = sentence_encoder.encode([resume_text])
 
-            input_tensor = torch.tensor(
-                embedding,
-                dtype=torch.float32
-            )
+    # ----------------------------------------------
+    # 9. DISPLAY RESULTS
+    # ----------------------------------------------
 
-            with torch.no_grad():
-                outputs = model(input_tensor)
-                probabilities = torch.softmax(outputs, dim=1)
+    st.divider()
+    st.header("3. Resume Analysis Results")
 
-                predicted_index = torch.argmax(
-                    probabilities,
-                    dim=1
-                ).item()
+    col1, col2 = st.columns(2)
 
-            predicted_category = (
-                label_encoder.inverse_transform(
-                    [predicted_index]
-                )[0]
-            )
+    with col1:
 
-            confidence = probabilities[
-                0, predicted_index
-            ].item()
-
-            # Find skills mentioned in the resume.
-            resume_skills = find_resume_skills(resume_text)
-
-            # Compare them with the selected role's skills.
-            required_skills = set(JOB_SKILLS[target_role])
-
-            matched_skills = sorted(
-                resume_skills & required_skills
-            )
-
-            missing_skills = sorted(
-                required_skills - resume_skills
-            )
-
-            match_percentage = (
-                len(matched_skills) / len(required_skills) * 100
-                if required_skills else 0
-            )
-
-        # ----------------------------------
-        # RESULTS: CATEGORY
-        # ----------------------------------
-        st.subheader("Career Category Prediction")
-
-        st.success(
-            f"Predicted Resume Category: {predicted_category}"
+        st.metric(
+            "Predicted Resume Category",
+            str(predicted_category).replace(
+                "-", " "
+            ).title()
         )
 
-        st.write(
-            f"Model confidence: {confidence:.1%}"
+    with col2:
+
+        st.metric(
+            "Model Confidence",
+            f"{confidence_score:.1f}%"
         )
 
-        st.caption(
-            "The predicted category is based on the categories "
-            "learned during model training. It is not a guarantee "
-            "of job suitability."
+    st.caption(
+        "Confidence is the model's predicted probability, "
+        "not a guarantee that the classification is correct."
+    )
+
+
+    # Skill coverage.
+    st.subheader(
+        f"4. Skill Gap Analysis — "
+        f"{selected_role.replace('-', ' ').title()}"
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+
+        st.metric(
+            "Expected Skills",
+            len(expected_skills)
         )
 
-        st.divider()
+    with col2:
 
-        # ----------------------------------
-        # RESULTS: SKILL MATCH
-        # ----------------------------------
-        st.subheader(f"Skill Gap Results: {target_role}")
-
-        col1, col2, col3 = st.columns(3)
-
-        col1.metric(
-            "Required Skills",
-            len(required_skills)
-        )
-
-        col2.metric(
+        st.metric(
             "Matching Skills",
-            len(matched_skills)
+            len(matching_skills)
         )
 
-        col3.metric(
+    with col3:
+
+        st.metric(
             "Skills Not Found",
             len(missing_skills)
         )
 
-        st.progress(int(round(match_percentage)))
+    st.write("**Skill coverage**")
+
+    st.progress(int(round(coverage)))
+
+    st.write(f"{coverage:.1f}% of expected skills detected")
+
+
+    # Matching skills.
+    st.subheader("✅ Matching Skills")
+
+    if matching_skills:
+
+        st.write(", ".join(matching_skills))
+
+    else:
+
+        st.info(
+            "No expected skills were detected by keyword matching."
+        )
+
+
+    # Missing skills.
+    st.subheader("📌 Skills Not Found in Your Resume")
+
+    if missing_skills:
+
+        st.write(", ".join(missing_skills))
+
+    else:
+
+        st.success(
+            "All expected skills were detected in your resume."
+        )
+
+
+    # Recommendations.
+    st.subheader("💡 Recommendations")
+
+    if missing_skills:
 
         st.write(
-            f"**Skill coverage: {match_percentage:.1f}%**"
+            "Consider reviewing these skills for your target "
+            "career and adding relevant evidence to your resume "
+            "if you genuinely have those skills:"
         )
 
-        # ----------------------------------
-        # MATCHED SKILLS
-        # ----------------------------------
-        st.subheader("✅ Skills Found in Your Resume")
+        for skill in missing_skills[:10]:
 
-        if matched_skills:
-            for skill in matched_skills:
-                st.write(f"✅ {skill}")
-        else:
-            st.info(
-                "No skills from this role's list were identified "
-                "in the resume text."
+            st.markdown(f"- **{skill}**")
+
+        if len(missing_skills) > 10:
+
+            st.caption(
+                f"{len(missing_skills) - 10} additional "
+                "skills were not found."
             )
 
-        # ----------------------------------
-        # MISSING SKILLS
-        # ----------------------------------
-        st.subheader("📌 Skills to Consider Learning")
+    else:
 
-        if missing_skills:
-            for skill in missing_skills:
-                st.write(f"📌 {skill}")
-        else:
-            st.success(
-                "All skills in this predefined role list "
-                "were found in your resume."
-            )
-
-        # ----------------------------------
-        # RECOMMENDATIONS
-        # ----------------------------------
-        st.subheader("🎯 Recommendations")
-
-        if missing_skills:
-            st.write(
-                f"To prepare for a **{target_role}** role, "
-                "consider reviewing these skills:"
-            )
-
-            for skill in missing_skills:
-                st.write(f"• Learn or practise {skill}")
-
-            st.write(
-                "Add a skill to your resume only if you genuinely "
-                "have that skill or relevant experience."
-            )
-
-        else:
-            st.write(
-                "Your resume mentions all the skills in this "
-                "project's predefined list. Continue building "
-                "projects and practical experience."
-            )
-
-        st.caption(
-            "Note: Skill identification uses keyword matching. "
-            "A skill not found in the text may still be known "
-            "by the candidate. The role skill lists are examples, "
-            "not official requirements for every employer."
+        st.write(
+            "Your resume mentions all the expected skills "
+            "in the selected dataset entry. Consider adding "
+            "specific projects or achievements to demonstrate "
+            "your experience."
         )
 
 
-# ==========================================
-# 11. FOOTER
-# ==========================================
+    # Explain limitations.
+    st.divider()
+
+    st.caption(
+        "Note: Skill matching is based on text keywords. "
+        "A skill marked 'not found' may still be a skill you "
+        "possess if it is described differently in your resume. "
+        "The selected role's skills are based on the available "
+        "dataset and may not represent every employer's "
+        "requirements."
+    )
+
+
+# Footer.
 st.divider()
 
 st.caption(
-    "AI Resume Analyzer | Deep Learning and Rule-Based Skill Analysis"
+    "AI Resume Analyzer | Deep Learning Classification "
+    "+ Dataset-Based Skill Gap Analysis"
 )
