@@ -1,0 +1,6 @@
+streamlit
+torch
+sentence-transformers
+scikit-learn
+numpy
+joblib
